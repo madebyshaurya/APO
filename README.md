@@ -32,25 +32,26 @@ Apo is a collaborative research and planning workspace that fuses an **AI search
 
 ```mermaid
 flowchart LR
-  %% Use valid subgraph IDs with labels
-  subgraph client["Client (Next.js App Router)"]
-    UI[Canvas + Panels\n(Excalidraw + shadcn/ui)]
-    CMD[Command Palette\n/Hotkeys]
-    Collab[Presence+Cursors\n(WebSocket)]
-    MermaidPreview[Mermaid Preview\n(SVG)]
+  subgraph client[Client - Next.js App Router]
+    UI["Canvas + Panels\n(Excalidraw + shadcn/ui)"]
+    CMD["Command Palette\n/Hotkeys"]
+    Collab["Presence + Cursors\n(WebSocket)"]
+    MermaidPreview["Mermaid Preview\n(SVG)"]
   end
 
   subgraph backend[Backend]
-    API[/Route Handlers & Server Actions/]
-    Graph[LangGraph Server\n(research & planning flows)]
-    Realtime[Collab WS: excalidraw-room or Yjs/Hocuspocus]
+    API["/Route Handlers & Server Actions/"]
+    Graph["LangGraph Server\n(research & planning flows)"]
+    Realtime["Collab WS: excalidraw-room or Yjs/Hocuspocus"]
   end
 
   subgraph data[Data]
-    SB[(Supabase Postgres + pgvector)]
-    Storage[[Supabase Storage\nimages/assets]]
-    Index[(Embeddings)]
+    SB["Supabase Postgres + pgvector"]
+    Storage["Supabase Storage\nimages/assets"]
+    Index["Embeddings"]
   end
+
+  External["Firecrawl:\nsearch/crawl/extract"]
 
   UI <-->|streaming events| API
   CMD --> API
@@ -60,7 +61,7 @@ flowchart LR
   Collab <-->|WS| Realtime
   UI <--> MermaidPreview
   API <--> Realtime
-  Graph --> External[(Firecrawl: search/crawl/extract)]
+  Graph --> External
 ```
 
 **Notes:**
@@ -112,7 +113,7 @@ flowchart LR
   D --> E[Planner (DAG)]
   E --> F[Mermaid Compiler]
   F --> G[Canvas Inserter]
-  C -->|deep dive| H[/v2/crawl: limit/subdomains\n webhook -> streaming ingest/]
+  C -->|deep dive| H[/v2/crawl: limit/subdomains\n webhook → streaming ingest/]
   H --> D
   D --> I[/v2/extract: schema+prompt\n tables for PMF/]
   I --> G
