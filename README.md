@@ -108,14 +108,14 @@ flowchart LR
 ```mermaid
 flowchart LR
   A[User Prompt] --> B[Query Expander]
-  B --> C[/v2/search: sources web+news\n tbs freshness, markdown on/ off/]
+  B --> C[/v2/search: sources web+news<br/>tbs freshness, markdown on/off/]
   C --> D[Embed + Dedupe + Index]
-  D --> E[Planner (DAG)]
+  D --> E["Planner DAG"]
   E --> F[Mermaid Compiler]
   F --> G[Canvas Inserter]
-  C -->|deep dive| H[/v2/crawl: limit/subdomains\n webhook → streaming ingest/]
+  C -->|deep dive| H[/v2/crawl: limit/subdomains<br/>webhook → streaming ingest/]
   H --> D
-  D --> I[/v2/extract: schema+prompt\n tables for PMF/]
+  D --> I[/v2/extract: schema+prompt<br/>tables for PMF/]
   I --> G
 ```
 
