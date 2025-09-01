@@ -32,31 +32,32 @@ Apo is a collaborative research and planning workspace that fuses an **AI search
 
 ```mermaid
 flowchart LR
-  subgraph Client (Next.js App Router)
+  %% Use valid subgraph IDs with labels
+  subgraph client["Client (Next.js App Router)"]
     UI[Canvas + Panels\n(Excalidraw + shadcn/ui)]
     CMD[Command Palette\n/Hotkeys]
     Collab[Presence+Cursors\n(WebSocket)]
     MermaidPreview[Mermaid Preview\n(SVG)]
   end
 
-  subgraph Backend
+  subgraph backend[Backend]
     API[/Route Handlers & Server Actions/]
     Graph[LangGraph Server\n(research & planning flows)]
     Realtime[Collab WS: excalidraw-room or Yjs/Hocuspocus]
   end
 
-  subgraph Data
+  subgraph data[Data]
     SB[(Supabase Postgres + pgvector)]
     Storage[[Supabase Storage\nimages/assets]]
     Index[(Embeddings)]
   end
 
-  UI <--streaming events--> API
+  UI <-->|streaming events| API
   CMD --> API
   API --> Graph
   Graph <--> SB
   Graph <--> Storage
-  Collab <--WS--> Realtime
+  Collab <-->|WS| Realtime
   UI <--> MermaidPreview
   API <--> Realtime
   Graph --> External[(Firecrawl: search/crawl/extract)]
