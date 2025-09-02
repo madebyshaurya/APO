@@ -1,5 +1,5 @@
-import ExcalidrawComponent from "../components/ExcalidrawComponent";
+import Workspace from "../components/Workspace";
 
 export default function Home() {
-  return <ExcalidrawComponent />;
+  return <Workspace />;
 }

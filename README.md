@@ -19,6 +19,29 @@ Apo is a collaborative research and planning workspace that fuses an **AI search
 
 ---
 
+## Status at a Glance
+
+Legend: ✅ Done · ⏳ In Progress · ❌ Not Implemented
+
+- Core app: Next.js (App Router) + TypeScript + Tailwind v4 — ✅
+- Canvas: Excalidraw renders client-side — ✅
+- Shell: Workspace layout (top toolbar, right panel shell, assistant input) — ✅
+- Diagrams: Mermaid preview panel (client-only) with error surfacing — ✅
+- Research API: `POST /api/ai/research` (Firecrawl /v2/search) — ✅ (requires `FIRECRAWL_API_KEY`)
+- Research UI: `ResearchPanel` (query, sources, tbs, markdown, results) — ⏳ (component exists; not mounted in UI)
+- Diagram from prompt: `POST /api/ai/diagram` (AI SDK generateObject) — ✅ (requires `OPENAI_API_KEY`)
+- Assistant: `/api/ai/assistant` + `/api/ai/assistant/stream` tool-calling + streaming — ✅
+- LangGraph agent: `/api/ai/agent` (backend only; UI not using) — ⏳
+- Collab: excalidraw-room realtime sync — ❌ (env placeholder only)
+- Persistence: Supabase Auth, boards, snapshots — ❌
+- Research deep dive: Firecrawl `/v2/crawl` + `/v2/extract` + webhook ingest — ❌
+- Vector search: pgvector embeddings + recall — ❌
+- Mermaid → Excalidraw element insertion — ❌
+- Inspiration/PMF panels and competitor matrix — ❌
+- Ops/observability: rate limiting, Langfuse/Helicone — ❌
+
+---
+
 ## 1) Key Decision: LangGraph over ad‑hoc tool-calling
 **Why:** Apo’s workflows (deep research → synthesize → plan → diagram → cite → iterate) are **multi-step, stateful, resumable**, and benefit from **inspection, retries, branching, and checkpoints**. **LangGraph** + **LangGraph Studio** provide:
 - Explicit graphs/nodes with typed I/O and guards.
@@ -406,12 +429,15 @@ create index on doc_chunks using hnsw (embedding vector_l2_ops);
 ## 14) API Surface (Selected)
 
 **Server Routes (Next.js)**
-- `POST /api/ai/research` → Firecrawl search → upsert sources, embed, stream results.
-- `POST /api/ai/crawl` → start crawl (webhook configured).
-- `POST /api/ai/extract` → start extraction (schema + prompt).
-- `POST /api/firecrawl/webhook` → handle crawl/extract events; ingest pages and structured data.
-- `POST /api/ai/diagram` → DAG→Mermaid compile; return SVG + Excalidraw elements.
-- `POST /api/canvas/insert` → upsert elements + snapshot to `board_versions`.
+- `POST /api/ai/research` → Firecrawl search → upsert sources, embed, stream results. — ✅ Implemented
+- `POST /api/ai/crawl` → start crawl (webhook configured). — ❌ Not implemented
+- `POST /api/ai/extract` → start extraction (schema + prompt). — ❌ Not implemented
+- `POST /api/firecrawl/webhook` → handle crawl/extract events; ingest pages and structured data. — ❌ Not implemented
+- `POST /api/ai/diagram` → DAG→Mermaid compile; return SVG + Excalidraw elements. — ✅ Implemented (returns Mermaid now)
+- `POST /api/canvas/insert` → upsert elements + snapshot to `board_versions`. — ❌ Not implemented
+- `POST /api/ai/assistant` → single-input assistant with tool-calling. — ✅ Implemented
+- `GET /api/ai/assistant/stream` → SSE streaming for assistant. — ✅ Implemented
+- `POST /api/ai/agent` → LangGraph agent (backend only). — ⏳ Present, not wired in UI
 
 **LangGraph Tools**
 - `search_web({ q, tbs?, sources?, limit?, scrapeOptions? })`
@@ -504,6 +530,49 @@ src/
 - Move all collaboration to CRDT (Yjs) or hybrid (canvas on room, other panels on Yjs)?
 - Add voice co-pilot (Realtime API) for live ideation on the canvas.
 - Add cost dashboard per org (calls, credits, crawl pages).
+
+---
+
+## Quickstart (current repo state)
+
+- Requirements: Node 18+ (or 20+), pnpm/npm, a Firecrawl API key (optional but recommended).
+- Setup:
+  1) Copy .env.example to .env and fill FIRECRAWL_API_KEY if you want Research to work.
+  2) Install deps: npm install
+  3) Run dev server: npm run dev
+  4) Open http://localhost:3000
+
+- What you can do now:
+  - Draw on the Excalidraw canvas.
+  - Use the bottom input to prompt Apo. The model (AI_MODEL) will choose tools via tool calling (web_search or write_mermaid) and, if a diagram is produced, it will auto-open the Diagram panel to preview.
+
+- New files added in this iteration:
+  - src/components/Workspace.tsx — top bar + right-side panels wiring.
+  - src/components/mermaid/MermaidContext.tsx — shared state so Research panel can populate Diagram panel.
+  - src/components/panels/DiagramPanel.tsx — client-only Mermaid editor + preview and “Generate from prompt” via AI SDK.
+  - src/components/panels/ResearchPanel.tsx — query UI calling our research API and “Generate Flow” (Firecrawl + LangChain + 4o-mini).
+  - src/app/api/ai/research/route.ts — calls Firecrawl /v2/search.
+  - src/app/api/ai/research-plan/route.ts — Firecrawl search → LangChain (ChatOpenAI 4o-mini) → DAG + Mermaid.
+  - src/app/api/ai/diagram/route.ts — uses AI SDK generateObject to produce DAG + Mermaid.
+  - src/lib/ai/tools/firecrawl.ts — minimal wrapper.
+  - src/lib/ai/client.ts — AI SDK OpenAI provider client with baseURL support.
+  - src/lib/ai/schemas.ts — Zod DAG schema used by AI.
+  - src/lib/mermaid/compile.ts — DAG→Mermaid compiler.
+  - .env.example — template for env vars.
+  - IMPLEMENTATION_STATUS.md — running status of implemented/partial/not implemented and what’s needed from you.
+
+- Notes:
+  - Live collaboration via excalidraw-room is not yet enabled (needs server URL & integration step).
+  - No DB persistence yet; next step is Supabase Auth + board snapshots.
+  - AI diagram generation requires setting OPENAI_API_KEY (and optionally OPENAI_BASE_URL for OpenAI-compatible providers). Default model is AI_MODEL (gpt-4o-mini).
+
+## Current Implementation Snapshot
+
+See IMPLEMENTATION_STATUS.md for a living view of:
+- Implemented pieces
+- Partial/placeholder items
+- Not implemented (planned)
+- Decisions/APIs needed from you
 
 ---
 
