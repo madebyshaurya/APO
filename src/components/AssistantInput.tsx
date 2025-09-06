@@ -2,12 +2,13 @@
 
 import { useRef, useState } from "react";
 import { useMermaidCode } from "./mermaid/MermaidContext";
-import { emitAddDiagram, emitAddExcalidraw } from "@/lib/board/events";
+import { emitAddDiagram, emitAddExcalidraw, emitPatchExcalidraw } from "@/lib/board/events";
 
 export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () => void }) {
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [showError, setShowError] = useState(false);
   const [last, setLast] = useState<string>("");
   const [model, setModel] = useState<string>(process.env.NEXT_PUBLIC_DEFAULT_MODEL || "openai/gpt-4o-mini");
   const [attachments, setAttachments] = useState<{ name: string; text: string }[]>([]);
@@ -19,23 +20,33 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
     const prompt = value.trim();
     if (!prompt || loading) return;
     setLoading(true);
-    setError("");
+    setError(""); setShowError(false);
     setLast("");
 
     // Prefer streaming via SSE
     try {
       if (attachments.length === 0) {
-        // Prepare canvas summary context (if available)
+        // Prepare canvas summary context (if available); decide whether to inline digest
+        let ctx: string | null = null;
+        let dgInline = false;
         try {
           const summary = (window as any).apoGetCanvasSummary?.();
           if (summary) {
+            const jsonStr = JSON.stringify(summary);
+            // Heuristics: small if few items and small JSON size
+            const nodes = summary?.stats?.nodes || (summary?.nodes?.length ?? 0);
+            const edges = summary?.stats?.edges || (summary?.edges?.length ?? 0);
+            const images = summary?.stats?.images || 0;
+            const freedraw = summary?.stats?.freedraw || 0;
+            dgInline = (nodes <= 24 && edges <= 32 && images <= 2 && freedraw <= 40 && jsonStr.length <= 20000);
+            // Always upload to context store so tools can fetch when needed
             const res = await fetch("/api/canvas/summary", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary }) });
             const json = await res.json();
-            if (res.ok && json?.ok && json?.id) setCtxId(json.id);
+            if (res.ok && json?.ok && json?.id) { ctx = json.id; setCtxId(json.id); }
           }
         } catch {}
         // Use streaming when no file attachments
-        const url = `/api/ai/assistant/stream?prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(model)}${ctxId ? `&ctx=${encodeURIComponent(ctxId)}` : ""}`;
+        const url = `/api/ai/assistant/stream?prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(model)}${ctx ? `&ctx=${encodeURIComponent(ctx)}` : ""}${dgInline ? `&dg=1` : ""}`;
         const es = new EventSource(url);
         es.addEventListener("log", (ev: any) => {
           const data = safeParse(ev.data);
@@ -59,9 +70,23 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
             emitAddExcalidraw({ elements: data.elements });
           }
         });
+        es.addEventListener("excalidraw_patch", (ev: any) => {
+          const data = safeParse(ev.data);
+          const detail: any = {};
+          if (Array.isArray(data?.update)) detail.update = data.update;
+          if (Array.isArray(data?.remove)) detail.remove = data.remove;
+          if (Array.isArray(data?.connect)) detail.connect = data.connect;
+          if (Array.isArray(data?.add)) detail.add = data.add;
+          if (detail.update || detail.remove || detail.connect || detail.add) {
+            emitPatchExcalidraw(detail);
+          }
+        });
         es.addEventListener("error", (ev: any) => {
           const data = safeParse(ev.data);
           setError(data?.message || "Error");
+          setShowError(true);
+          // auto-fade after 4s
+          setTimeout(() => setShowError(false), 4000);
         });
         es.addEventListener("done", () => {
           es.close();
@@ -71,6 +96,15 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
       }
       // If there are files, use non-streaming POST
       try {
+        // Trim and also upload attachments into context for future turns
+        const trimmed = attachments.slice(0, 4).map((a) => ({ name: a.name, text: (a.text || "").slice(0, 8000) }));
+        try {
+          const summary = (window as any).apoGetCanvasSummary?.();
+          const withUploads = summary ? { ...summary, attachments: trimmed } : { attachments: trimmed };
+          const resCtx = await fetch("/api/canvas/summary", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: withUploads }) });
+          const ctxJson = await resCtx.json().catch(() => ({}));
+          if (resCtx.ok && ctxJson?.ok && ctxJson?.id) setCtxId(ctxJson.id);
+        } catch {}
         const res = await fetch("/api/ai/assistant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -86,6 +120,8 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
         }
       } catch (e2: any) {
         setError(e2?.message ?? String(e2));
+        setShowError(true);
+        setTimeout(() => setShowError(false), 4000);
       } finally {
         setLoading(false);
       }
@@ -113,7 +149,7 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
       const f = files[i];
       try {
         const text = await f.text();
-        list.push({ name: f.name, text: text.slice(0, 12000) });
+        list.push({ name: f.name, text: text.slice(0, 8000) });
       } catch {}
     }
     setAttachments((prev) => [...prev, ...list]);
@@ -145,7 +181,7 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
         </div>
 
         {/* Bottom row: chips (show on hover/focus) */}
-        <div className="hidden group-hover:flex group-focus-within:flex items-center justify-between text-[12px] text-gray-700 border-t px-4 py-2 rounded-b-2xl">
+        <div className={`${loading ? "flex" : "hidden group-hover:flex group-focus-within:flex"} items-center justify-between text-[12px] text-gray-700 border-t px-4 py-2 rounded-b-2xl`}>
           <div className="flex items-center gap-2">
             <button
               className="h-6 w-6 rounded-full border flex items-center justify-center text-gray-700 hover:bg-gray-50"
@@ -176,7 +212,11 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
               <option value="openai/gpt-4o">openai/gpt-4o</option>
               <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
             </select>
-            <div className="text-gray-500">{value.length} / 3,000</div>
+            {loading ? (
+              <div className="text-gray-500">AI working…</div>
+            ) : (
+              <div className="text-gray-500">{value.length} / 3,000</div>
+            )}
           </div>
         </div>
       </div>
@@ -186,7 +226,16 @@ export default function AssistantInput({ onOpenDiagram }: { onOpenDiagram?: () =
           className="absolute left-0 right-0 text-sm text-gray-800 bg-white border rounded-xl px-4 py-3 shadow-md whitespace-pre-wrap overflow-auto"
           style={{ bottom: "calc(100% + 10px)", maxHeight: 220 }}
         >
-          {error ? <span className="text-red-600">{error}</span> : last}
+          {error ? (
+            <span
+              className="text-red-600"
+              style={{ opacity: showError ? 1 : 0, transition: "opacity 400ms ease" }}
+            >
+              {error}
+            </span>
+          ) : (
+            last
+          )}
         </div>
       )}
       </div>

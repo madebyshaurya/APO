@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
   const prompt = searchParams.get("prompt") || "";
   const modelParam = searchParams.get("model") || undefined;
   const ctxId = searchParams.get("ctx") || undefined;
+  const digestInline = (searchParams.get("dg") || "").toLowerCase() === "1" || (searchParams.get("dg") || "").toLowerCase() === "inline";
   const allowed = ["openai/gpt-4o-mini", "openai/gpt-4o", "google/gemini-2.5-flash"] as const;
   const sanitizeModel = (m?: string) => (m && (allowed as readonly string[]).includes(m)) ? m : "openai/gpt-4o-mini";
   const modelName = sanitizeModel(modelParam || process.env.AI_MODEL || "openai/gpt-4o-mini");
@@ -74,6 +75,27 @@ export async function GET(req: NextRequest) {
               }
             },
           }),
+          read_excalidraw: tool({
+            description: "Fetch the Excalidraw digest (selection → viewport → all).",
+            inputSchema: z.object({ scope: z.enum(["selection","viewport","all"]).optional() }).optional(),
+            execute: async ({ scope }: any = {}) => {
+              if (!canvasSummary) return { empty: true };
+              return canvasSummary;
+            }
+          }),
+          get_element_details: tool({
+            description: "Return full text and precise sizes for specific element ids.",
+            inputSchema: z.object({ ids: z.array(z.string()).min(1).max(20) }),
+            execute: async ({ ids }: any) => {
+              const result: any[] = [];
+              if (!canvasSummary) return { items: result };
+              const details = (canvasSummary as any).details || {};
+              for (const id of ids || []) {
+                if (details[id]) result.push({ id, ...details[id] });
+              }
+              return { items: result };
+            }
+          }),
           write_mermaid: tool({
             description: "Create or update a Mermaid flowchart from a prompt or DAG.",
             inputSchema: z.object({ prompt: z.string().optional(), dag: z.any().optional() }),
@@ -124,6 +146,26 @@ export async function GET(req: NextRequest) {
               }
             },
           }),
+          patch_excalidraw: tool({
+            description: "Connect nodes and update or remove existing elements on the board.",
+            inputSchema: z.object({
+              connect: z.array(z.object({ from: z.string(), to: z.string(), label: z.string().optional() })).optional(),
+              update: z.array(z.object({ id: z.string(), text: z.string().optional(), x: z.number().optional(), y: z.number().optional(), w: z.number().optional(), h: z.number().optional() })).optional(),
+              remove: z.array(z.string()).optional(),
+            }),
+            execute: async ({ connect = [], update = [], remove = [] }: any) => {
+              try {
+                const addArrows = (connect || []).map((c: any) => ({ type: "arrow", start: { id: c.from }, end: { id: c.to }, label: c.label ? { text: c.label } : undefined }));
+                if (addArrows.length) send("excalidraw", { elements: addArrows });
+                if ((update && update.length) || (remove && remove.length)) send("excalidraw_patch", { update, remove });
+                return { ok: true, connected: (connect || []).length, updated: (update || []).length, removed: (remove || []).length };
+              } catch (err: any) {
+                const emsg = err?.message ?? String(err);
+                send("error", { scope: "patch_excalidraw", message: emsg });
+                return { error: emsg };
+              }
+            }
+          }),
           read_canvas: tool({
             description: "Read the current canvas summary (nodes, edges, selection/stats).",
             inputSchema: z.object({}).optional(),
@@ -164,12 +206,25 @@ export async function GET(req: NextRequest) {
           "You are Apo, a research-first systems designer for software engineers.",
           "Decide freely which tool to use: web_search (fresh info), write_mermaid (flowchart), draw_excalidraw (boxes/arrows).",
           "Prefer clear, minimal explanations. For diagrams, choose layout and visuals yourself—only add layout hints when needed.",
+          "Always accompany diagram changes with a short textual recap of actions taken and suggested next steps.",
           "Examples:",
           "- To sketch a split FE/BE plan: draw_excalidraw with nodes ['frontend','backend'] and edges root->each.",
           "- To express detailed workflows: write_mermaid with phases as subgraphs.",
         ].join(" ");
 
-        const result = await streamText({ model: aiModel(modelName), tools, system: sys, prompt });
+        const promptWithDigest = (() => {
+          try {
+            if (!digestInline) return prompt;
+            if (!canvasSummary) return prompt;
+            const digest = JSON.stringify(canvasSummary);
+            if (digest.length > 25000) return prompt; // keep request under control
+            return `${prompt}\n\nCanvas digest (JSON):\n${digest}`;
+          } catch {
+            return prompt;
+          }
+        })();
+
+        const result = await streamText({ model: aiModel(modelName), tools, system: sys, prompt: promptWithDigest });
         for await (const delta of result.textStream) {
           if (delta) send("text", { chunk: delta });
         }

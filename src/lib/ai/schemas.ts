@@ -69,10 +69,21 @@ export type ExSpec = z.infer<typeof ExSpecSchema>;
 
 // Lightweight canvas summary supplied by the client and used by tools
 export const CanvasSummarySchema = z.object({
+  // Digest scope used to keep payloads small
+  scope: z.enum(["selection", "viewport", "all"]).optional(),
+  // Lightweight stats (no pixels/points). Only counts.
   stats: z
-    .object({ nodes: z.number(), edges: z.number(), bounds: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional() })
+    .object({
+      nodes: z.number().optional(),
+      edges: z.number().optional(),
+      bounds: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
+      images: z.number().optional(),
+      freedraw: z.number().optional(),
+    })
     .optional(),
+  // Selected element ids (if any)
   selection: z.array(z.string()).optional(),
+  // Text-bearing items only (sticky notes, text boxes, labeled boxes)
   nodes: z
     .array(
       z.object({
@@ -86,6 +97,7 @@ export const CanvasSummarySchema = z.object({
       })
     )
     .default([]),
+  // Connections (arrows) between ids with optional label
   edges: z
     .array(
       z.object({
@@ -95,6 +107,25 @@ export const CanvasSummarySchema = z.object({
       })
     )
     .default([]),
+  // User-provided attachments (trimmed): limited text content only
+  attachments: z
+    .array(
+      z.object({ name: z.string(), text: z.string().optional().default("") })
+    )
+    .optional(),
+  // Optional detail index for on-demand lookup
+  details: z
+    .record(
+      z.object({
+        text: z.string().optional().default(""),
+        x: z.number().optional(),
+        y: z.number().optional(),
+        w: z.number().optional(),
+        h: z.number().optional(),
+        type: z.string().optional(),
+      })
+    )
+    .optional(),
   hash: z.string().optional(),
 });
 export type CanvasSummary = z.infer<typeof CanvasSummarySchema>;

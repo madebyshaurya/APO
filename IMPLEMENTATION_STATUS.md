@@ -1,6 +1,6 @@
 # Apo – Implementation Status
 
-Updated: 2025-09-05
+Updated: 2025-09-06
 
 This document tracks the current state of implementation. It will evolve as work progresses.
 
@@ -27,10 +27,20 @@ Sections:
 - Assistant chat bar redesigned (white variant): rounded corners, chips row visible, orange circular send button, model selector includes Gemini.
 - Assistant routes:
   - Streaming (`GET /api/ai/assistant/stream`): unified via AI SDK v2 for OpenAI/OpenRouter and Gemini — true token streaming + tool-calling.
-  - Tools: `web_search`, `write_mermaid`, and new `draw_excalidraw` that inserts boxes/arrows directly into the Excalidraw canvas (via SSE `excalidraw`).
+  - Tools: `web_search`, `write_mermaid`, `draw_excalidraw` (inserts boxes/arrows via SSE `excalidraw`), `patch_excalidraw` (connect/update/remove), `read_excalidraw(scope?)`, and `get_element_details(ids[])`.
   - Non‑streaming (`POST /api/ai/assistant`): still supported; streaming is the default UX.
   - Prompt tuned: fewer constraints; the model freely chooses layout and which tool to use, with optional layout hints supported.
-  - Canvas context: client computes a compact `CanvasSummary` and uploads it to `/api/canvas/summary`. Streaming accepts `?ctx=<id>` and exposes tools: `read_canvas()` and `search_canvas({ query, limit? })`.
+- Canvas context/digest: implemented. Client computes a compact digest and uploads it to `/api/canvas/summary`. The digest contains:
+    - Text items only (text boxes, labeled boxes): id, first ~200 chars, rough position.
+    - Connections (arrows): from id → to id, optional label.
+    - Stats for noisy items only: counts of images and freedraw strokes (no pixels/points).
+    - Scope to keep it small: prefer current selection; else on‑screen viewport; otherwise falls back to whole board.
+    - Optional attachments: trimmed user uploads (name + text excerpt) added to the same context (limited to 4 files × 8KB each). Included inline for very small requests; otherwise available via tools.
+    - On small boards, the client also inlines the digest alongside the user's message (query param `dg=1`), so the model sees it without a tool call.
+    - Tools for on‑demand access:
+      - `read_canvas()` and `search_canvas({ query, limit? })` (legacy)
+      - `read_excalidraw(scope?: "selection"|"viewport"|"all")` (advisory scope; returns current digest)
+      - `get_element_details({ ids: string[] })` returns full text and exact sizes for the specified ids when available.
 - When the assistant generates a DAG, the app auto-inserts nodes and arrows onto the Excalidraw board (simple column layout grouped by phase). Mermaid preview also updates.
 
 ## Partial / Placeholder
@@ -45,7 +55,7 @@ Sections:
 - Realtime presence/chat.
 - Firecrawl /v2/crawl and /v2/extract flows and webhook ingest.
 - Vector embeddings and search in Postgres/pgvector.
-- LangGraph graphs (deepResearch, planToDiagram, pmfCompare).
+- LangGraph graphs (deepResearch, planToDiagram, pmfCompare) – stubs present, not wired into routes yet.
 - Excalidraw asset management (icons/images) and nicer layout/autorouting.
 - Inspiration surfacer and PMF competitor matrix UI.
 - Rate limiting, Langfuse/Helicone observability, deployments.
@@ -64,7 +74,7 @@ Sections:
 3) Improve Excalidraw layout (Dagre/ELK), add icons/images to nodes, and edge autorouting.
 4) Expand research to ingest + display citations and allow dragging references to canvas.
 5) Upgrade Excalidraw layout (Dagre/ELK), edge routing, and theme-aware node styles for the draw tool.
-6) Add embeddings-based `search_canvas` for semantic matches (optional)
+6) Add embeddings-based `search_canvas` for semantic matches (optional).
 
 ## Known Issues / Troubleshooting
 - Runtime TypeError: Cannot read properties of undefined (reading 'call') — Next.js 15.5.2 (Webpack)
