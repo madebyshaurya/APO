@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMermaidCode } from "../mermaid/MermaidContext";
+import { emitAddDiagram } from "@/lib/board/events";
 
 // Dynamically import mermaid on the client to avoid SSR issues
 const useMermaid = () => {
@@ -59,6 +60,7 @@ export default function DiagramPanel() {
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || `Request failed (${res.status})`);
       setCode(json.mermaid);
+      if (json?.dag) emitAddDiagram({ dag: json.dag, mermaid: json.mermaid });
       // re-render with new code
       setTimeout(render, 0);
     } catch (e: any) {
@@ -157,4 +159,3 @@ export default function DiagramPanel() {
     </div>
   );
 }
-

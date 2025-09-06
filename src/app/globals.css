@@ -1,18 +1,5 @@
 @import "tailwindcss";
 
-:root {
-  --background: #fbfbfd;        /* subtly warm white like Excalidraw */
-  --foreground: #111318;        /* high-contrast text */
-  --panel-bg: #ffffff;          /* panels and surfaces */
-  --panel-text: #1a1c20;        /* text on panels */
-  --muted: #6b7280;             /* labels */
-  --border: #e5e7eb;            /* hairline */
-  --ring: #c7d2fe;              /* focus */
-}
-
-/* Force a light, crisp look regardless of OS theme for now */
-:root { color-scheme: light; }
-
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -20,10 +7,25 @@
   --font-mono: var(--font-geist-mono);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+/* Put all custom base styles inside a Tailwind layer so they aren't dropped */
+@layer base {
+  :root {
+    --background: #fbfbfd;        /* subtly warm white like Excalidraw */
+    --foreground: #111318;        /* high-contrast text */
+    --panel-bg: #ffffff;          /* panels and surfaces */
+    --panel-text: #1a1c20;        /* text on panels */
+    --muted: #6b7280;             /* labels */
+    --border: #e5e7eb;            /* hairline */
+    --ring: #c7d2fe;              /* focus */
+    /* Force a light, crisp look regardless of OS theme for now */
+    color-scheme: light;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans), -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
 }
 
 /***** UI Primitives *****/
@@ -56,5 +58,29 @@ body {
 }
 .button-tab:active { transform: translateY(0.5px) scale(0.995); }
 
-/* Hairline dividers */
-.divider { border-color: var(--border); }
+/* Components layer for app-specific classes */
+@layer components {
+  /* Hairline dividers */
+  .divider { border-color: var(--border); }
+
+  /* Chat composer: white variant */
+  .chat-composer {
+    position: relative;
+    border: 1px solid var(--border);
+    background: #ffffff;
+    border-radius: 14px; /* softer corners */
+    transition: box-shadow 260ms cubic-bezier(.2,.8,.2,1),
+                background 260ms cubic-bezier(.2,.8,.2,1),
+                border-color 260ms cubic-bezier(.2,.8,.2,1);
+    box-shadow: 0 4px 14px rgba(17,19,24,0.06);
+    overflow: hidden; /* ensure inner gradient line and border align to radius */
+  }
+  /* Removed the inner left accent line per request */
+  .chat-composer:hover,
+  .chat-composer:focus-within {
+    border-color: transparent; /* allows gradient border */
+    background: linear-gradient(#fff, #fff) padding-box,
+                linear-gradient(90deg, #93c5fd, #c4b5fd, #f9a8d4) border-box;
+    box-shadow: 0 8px 22px rgba(17,19,24,0.12);
+  }
+}

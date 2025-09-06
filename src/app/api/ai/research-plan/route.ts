@@ -36,9 +36,24 @@ export async function POST(req: NextRequest) {
       snippet: r?.snippet || "",
     }));
 
-    // LangChain structured generation (prefers env model, falls back to 4o-mini)
-    const modelName = process.env.AI_MODEL || "gpt-4o-mini";
-    const llm = new ChatOpenAI({ model: modelName, apiKey: process.env.OPENAI_API_KEY, temperature: 0.3 }).withStructuredOutput(DagSchema);
+    // LangChain structured generation (OpenRouter-compatible)
+    const allowed = ["openai/gpt-4o-mini", "openai/gpt-4o"] as const;
+    const sanitizeModel = (m?: string) => (m && (allowed as readonly string[]).includes(m)) ? m : "openai/gpt-4o-mini";
+    const modelName = sanitizeModel(process.env.AI_MODEL || "openai/gpt-4o-mini");
+    const llm = new ChatOpenAI({
+      model: modelName,
+      apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
+      temperature: 0.3,
+      configuration: {
+        baseURL: process.env.OPENROUTER_BASE_URL || process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
+        baseOptions: {
+          headers: {
+            ...(process.env.OPENROUTER_SITE_URL ? { "HTTP-Referer": process.env.OPENROUTER_SITE_URL } : {}),
+            ...(process.env.OPENROUTER_APP_NAME ? { "X-Title": process.env.OPENROUTER_APP_NAME } : {}),
+          },
+        },
+      },
+    }).withStructuredOutput(DagSchema);
 
     const prompt = ChatPromptTemplate.fromMessages([
       [
@@ -65,11 +80,24 @@ export async function POST(req: NextRequest) {
     try {
       dag = await prompt.pipe(llm).invoke({});
     } catch (e1: any) {
-      if (modelName !== "gpt-4o-mini") {
-        const fallback = new ChatOpenAI({ model: "gpt-4o-mini", apiKey: process.env.OPENAI_API_KEY, temperature: 0.3 }).withStructuredOutput(DagSchema);
+      if (modelName !== "openai/gpt-4o-mini") {
+        const fallback = new ChatOpenAI({
+          model: "openai/gpt-4o-mini",
+          apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
+          temperature: 0.3,
+          configuration: {
+            baseURL: process.env.OPENROUTER_BASE_URL || process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
+            baseOptions: {
+              headers: {
+                ...(process.env.OPENROUTER_SITE_URL ? { "HTTP-Referer": process.env.OPENROUTER_SITE_URL } : {}),
+                ...(process.env.OPENROUTER_APP_NAME ? { "X-Title": process.env.OPENROUTER_APP_NAME } : {}),
+              },
+            },
+          },
+        }).withStructuredOutput(DagSchema);
         dag = await prompt.pipe(fallback).invoke({});
         const mermaid = dagToMermaid(dag);
-        return NextResponse.json({ ok: true, dag, mermaid, citations: top, model: "gpt-4o-mini", fallback: true });
+        return NextResponse.json({ ok: true, dag, mermaid, citations: top, model: "openai/gpt-4o-mini", fallback: true });
       }
       throw e1;
     }
@@ -79,4 +107,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: err?.message ?? String(err) }, { status: 500 });
   }
 }
-

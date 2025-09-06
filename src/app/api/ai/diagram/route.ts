@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
-import { openai, defaultModel } from "@/lib/ai/client";
+import { aiModel, defaultModel } from "@/lib/ai/client";
 import { DagSchema } from "@/lib/ai/schemas";
 import { dagToMermaid } from "@/lib/mermaid/compile";
 
@@ -11,14 +11,21 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const prompt: string | undefined = body?.prompt;
   const sources: any[] = Array.isArray(body?.sources) ? body.sources : [];
-  const modelName: string = body?.model || defaultModel;
+  const allowed = ["openai/gpt-4o-mini", "openai/gpt-4o", "google/gemini-2.5-flash"] as const;
+  const sanitizeModel = (m?: string) => (m && (allowed as readonly string[]).includes(m)) ? m : (process.env.AI_MODEL || "openai/gpt-4o-mini");
+  const modelName: string = sanitizeModel(body?.model || defaultModel);
 
-  if (!process.env.OPENAI_API_KEY) {
+  const needsGoogle = modelName.startsWith("google/");
+  const hasOpenAI = !!(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
+  const hasGoogle = !!process.env.GOOGLE_API_KEY;
+
+  if ((needsGoogle && !hasGoogle) || (!needsGoogle && !hasOpenAI)) {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          "OPENAI_API_KEY is not set. Add it to your .env (you may also set OPENAI_BASE_URL for OpenAI-compatible providers) and try again.",
+        error: needsGoogle
+          ? "Google API key not set. Add GOOGLE_API_KEY to your .env.local."
+          : "OpenRouter/OpenAI API key is not set. Add OPENROUTER_API_KEY (preferred) or OPENAI_API_KEY.",
       },
       { status: 503 }
     );
@@ -42,7 +49,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { object: dag } = await generateObject({
-      model: openai(modelName) as any,
+      model: aiModel(modelName) as any,
       schema: DagSchema,
       system: sys,
       prompt: userText,
@@ -51,16 +58,16 @@ export async function POST(req: NextRequest) {
     const mermaid = dagToMermaid(dag);
     return NextResponse.json({ ok: true, dag, mermaid, model: modelName });
   } catch (err: any) {
-    if (modelName !== "gpt-4o-mini") {
+    if (modelName !== "openai/gpt-4o-mini") {
       try {
         const { object: dag } = await generateObject({
-          model: openai("gpt-4o-mini") as any,
+          model: aiModel("openai/gpt-4o-mini") as any,
           schema: DagSchema,
           system: sys,
           prompt: userText,
         });
         const mermaid = dagToMermaid(dag);
-        return NextResponse.json({ ok: true, dag, mermaid, model: "gpt-4o-mini", fallback: true });
+        return NextResponse.json({ ok: true, dag, mermaid, model: "openai/gpt-4o-mini", fallback: true });
       } catch (e2: any) {
         return NextResponse.json({ ok: false, error: e2?.message ?? String(e2) }, { status: 500 });
       }
@@ -68,4 +75,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: err?.message ?? String(err) }, { status: 500 });
   }
 }
-

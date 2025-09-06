@@ -4,7 +4,7 @@ import { MessagesAnnotation, StateGraph } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { generateObject } from "ai";
-import { openai as aiOpenAI } from "@/lib/ai/client";
+import { aiModel } from "@/lib/ai/client";
 import { DagSchema } from "@/lib/ai/schemas";
 import { dagToMermaid } from "@/lib/mermaid/compile";
 import { fcSearch } from "@/lib/ai/tools/firecrawl";
@@ -55,7 +55,7 @@ export const writeDiagramTool = new DynamicStructuredTool({
       .join("\n")}`;
 
     const { object: dag } = await generateObject({
-      model: aiOpenAI(process.env.AI_MODEL || "gpt-4o-mini") as any,
+      model: aiModel(process.env.AI_MODEL || "openai/gpt-4o-mini") as any,
       schema: DagSchema,
       system: sys,
       prompt: user,
@@ -70,16 +70,29 @@ export function buildAgentGraph() {
   const tools = [webSearchTool, writeDiagramTool];
   const toolNode = new ToolNode(tools);
 
-  const makeModel = (name: string) => new ChatOpenAI({ model: name, temperature: 0.2 }).bindTools(tools);
-  let model = makeModel(process.env.AI_MODEL || "gpt-4o-mini");
+  const makeModel = (name: string) => new ChatOpenAI({
+    model: name,
+    temperature: 0.2,
+    apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
+    configuration: {
+      baseURL: process.env.OPENROUTER_BASE_URL || process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
+      baseOptions: {
+        headers: {
+          ...(process.env.OPENROUTER_SITE_URL ? { "HTTP-Referer": process.env.OPENROUTER_SITE_URL } : {}),
+          ...(process.env.OPENROUTER_APP_NAME ? { "X-Title": process.env.OPENROUTER_APP_NAME } : {}),
+        },
+      },
+    },
+  }).bindTools(tools);
+  let model = makeModel(process.env.AI_MODEL || "openai/gpt-4o-mini");
 
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
     try {
       const response = await model.invoke(state.messages);
       return { messages: [response] };
     } catch (err) {
-      if ((process.env.AI_MODEL || "") !== "gpt-4o-mini") {
-        model = makeModel("gpt-4o-mini");
+      if ((process.env.AI_MODEL || "") !== "openai/gpt-4o-mini") {
+        model = makeModel("openai/gpt-4o-mini");
         const response = await model.invoke(state.messages);
         return { messages: [response] };
       }
@@ -103,4 +116,3 @@ export function buildAgentGraph() {
 
   return graph;
 }
-

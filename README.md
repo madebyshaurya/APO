@@ -29,16 +29,89 @@ Legend: ✅ Done · ⏳ In Progress · ❌ Not Implemented
 - Diagrams: Mermaid preview panel (client-only) with error surfacing — ✅
 - Research API: `POST /api/ai/research` (Firecrawl /v2/search) — ✅ (requires `FIRECRAWL_API_KEY`)
 - Research UI: `ResearchPanel` (query, sources, tbs, markdown, results) — ⏳ (component exists; not mounted in UI)
-- Diagram from prompt: `POST /api/ai/diagram` (AI SDK generateObject) — ✅ (requires `OPENAI_API_KEY`)
-- Assistant: `/api/ai/assistant` + `/api/ai/assistant/stream` tool-calling + streaming — ✅
+- Diagram from prompt: `POST /api/ai/diagram` (AI SDK generateObject) — ✅ (uses OpenRouter; requires `OPENROUTER_API_KEY` or `OPENAI_API_KEY`)
+- Assistant: `/api/ai/assistant` + `/api/ai/assistant/stream` tool-calling + streaming — ✅ (OpenRouter-compatible)
 - LangGraph agent: `/api/ai/agent` (backend only; UI not using) — ⏳
 - Collab: excalidraw-room realtime sync — ❌ (env placeholder only)
 - Persistence: Supabase Auth, boards, snapshots — ❌
 - Research deep dive: Firecrawl `/v2/crawl` + `/v2/extract` + webhook ingest — ❌
 - Vector search: pgvector embeddings + recall — ❌
-- Mermaid → Excalidraw element insertion — ❌
+- Mermaid → Excalidraw element insertion — ✅ (auto-places DAG as nodes + arrows)
+- Assistant input hover → full chat bar with model switcher + file upload — ✅
 - Inspiration/PMF panels and competitor matrix — ❌
 - Ops/observability: rate limiting, Langfuse/Helicone — ❌
+
+---
+
+## Model Providers & Setup
+
+- OpenRouter/OpenAI (default)
+  - Create an API key at https://openrouter.ai/ and set in `.env`:
+    - `OPENROUTER_API_KEY="sk-or-..."`
+    - Optional: `OPENROUTER_SITE_URL` and `OPENROUTER_APP_NAME`
+    - `AI_MODEL` default is `openai/gpt-4o-mini` (switchable in the chat bar)
+  - Compatible with OpenAI‑style endpoints via `OPENAI_BASE_URL` + `OPENAI_API_KEY`.
+
+- Google Gemini (v2)
+  - Set `GOOGLE_API_KEY` in `.env.local`.
+  - Select `google/gemini-2.5-flash` in the chat bar or set `AI_MODEL=google/gemini-2.5-flash`.
+  - Implementation notes:
+    - Diagram API (`/api/ai/diagram`) uses the AI SDK model factory and supports the Google provider.
+    - Assistant streaming uses Google’s official SDK for true token streaming and to avoid AI SDK v1/v2 spec mismatch.
+
+Endpoints wired to OpenRouter:
+- `/api/ai/assistant` and `/api/ai/assistant/stream` (tool calling)
+- `/api/ai/diagram` (structured DAG → Mermaid)
+- LangGraph agent (`/api/ai/agent`)
+
+Endpoints with Google support:
+- `/api/ai/assistant` and `/api/ai/assistant/stream` when `model=google/gemini-2.5-flash`
+- `/api/ai/diagram` when `model=google/gemini-2.5-flash`
+
+## Assistant Streaming & Tool‑Calling
+
+- Streaming: unified via AI SDK v2 for both OpenAI/OpenRouter and Gemini. Text is sent as SSE `text` chunks.
+- Tools available to the assistant:
+  - `web_search({ query, limit?, tbs?, sources? })` — Firecrawl v2 search for fresh info.
+  - `write_mermaid({ prompt?, dag? })` — returns a DAG (if needed) and emits an SSE `mermaid` event with code + DAG. The model chooses structure and style; no rigid template.
+  - `draw_excalidraw({ prompt?, spec? })` — builds an Excalidraw JSON spec, converts to element skeletons, and emits an SSE `excalidraw` event. The model chooses layout; optional `layout` hints are supported.
+  - `read_canvas()` — returns a compact summary of the current canvas (nodes, edges, stats, selection).
+  - `search_canvas({ query, limit? })` — finds nodes by text and returns matches with neighbor edges.
+  - Layout: nodes are placed by level (BFS from a likely root) with automatic wrapping (maxPerRow, default 4). The model can provide `layout: { direction: 'TB'|'LR', gapX, gapY, maxPerRow }` to influence placement.
+
+### Prompting tips (loose guidance)
+- Describe the system and relationships; the assistant decides whether to search, draw, or write Mermaid.
+- If you care about layout, hint it (e.g., “top→bottom 3 columns”). Otherwise the assistant chooses.
+- Examples:
+  - “Sketch a YouTube-like system (frontend/back-end, player, CDN, DB).”
+  - “Draw a deployment pipeline (source→build→test→deploy) in a compact 2-row layout.”
+
+SSE events (`GET /api/ai/assistant/stream`):
+- `text` — streamed tokens
+- `mermaid` — `{ code, dag }` used to open/update the Diagram panel
+- `excalidraw` — `{ elements }` inserted directly into the canvas
+- `log`, `done` — diagnostics and completion
+- `error` — structured `{ scope, message }` for missing keys, parsing failures, or tool errors; surfaced in the UI bubble
+
+### Excalidraw Spec (for the `draw_excalidraw` tool)
+
+The model returns JSON matching this shape (simplified):
+
+```
+{
+  "nodes": [{ "id": "root", "label": "youtube clone", "kind": "box" }],
+  "edges": [{ "from": "root", "to": "fe" }],
+  "layout": { "direction": "TB", "gapX": 180, "gapY": 130 },
+  "style": { "roundness": 0.2, "roughness": 1.6 }
+}
+```
+
+The server converts this to Excalidraw element skeletons and inserts them.
+
+### Canvas Summary (how the model "sees" the board)
+- Client computes a compact summary and uploads it to `/api/canvas/summary`, returning a short `ctx` id.
+- The streaming call includes `?ctx=<id>`. The model can then call `read_canvas` or `search_canvas` to inspect the scene.
+- Keeps prompts small and fast versus dumping the entire scene every turn.
 
 ---
 
@@ -535,16 +608,16 @@ src/
 
 ## Quickstart (current repo state)
 
-- Requirements: Node 18+ (or 20+), pnpm/npm, a Firecrawl API key (optional but recommended).
+- Requirements: Node 18+ (or 20+), pnpm/npm, a Firecrawl API key (optional for Research), and either an OpenRouter API key or a Google API key for AI features.
 - Setup:
-  1) Copy .env.example to .env and fill FIRECRAWL_API_KEY if you want Research to work.
+  1) Copy .env.example to .env. Set `OPENROUTER_API_KEY` (or `GOOGLE_API_KEY`) and `FIRECRAWL_API_KEY` if you want Research to work.
   2) Install deps: npm install
-  3) Run dev server: npm run dev
+  3) Run dev server: npm run dev (cleans `.next/` before starting)
   4) Open http://localhost:3000
 
 - What you can do now:
   - Draw on the Excalidraw canvas.
-  - Use the bottom input to prompt Apo. The model (AI_MODEL) will choose tools via tool calling (web_search or write_mermaid) and, if a diagram is produced, it will auto-open the Diagram panel to preview.
+  - Use the bottom input to prompt Apo. The chat bar defaults to a clean search-bar; chips and options appear on hover. Choose `google/gemini-2.5-flash` or an OpenRouter model. If a diagram is produced, it auto-opens the Diagram panel and inserts nodes/edges on the canvas. When the assistant draws directly, elements are inserted via `excalidraw` SSE without opening the diagram panel.
 
 - New files added in this iteration:
   - src/components/Workspace.tsx — top bar + right-side panels wiring.
@@ -552,19 +625,31 @@ src/
   - src/components/panels/DiagramPanel.tsx — client-only Mermaid editor + preview and “Generate from prompt” via AI SDK.
   - src/components/panels/ResearchPanel.tsx — query UI calling our research API and “Generate Flow” (Firecrawl + LangChain + 4o-mini).
   - src/app/api/ai/research/route.ts — calls Firecrawl /v2/search.
-  - src/app/api/ai/research-plan/route.ts — Firecrawl search → LangChain (ChatOpenAI 4o-mini) → DAG + Mermaid.
-  - src/app/api/ai/diagram/route.ts — uses AI SDK generateObject to produce DAG + Mermaid.
+  - src/app/api/ai/research-plan/route.ts — Firecrawl search → LangChain (OpenRouter) → DAG + Mermaid.
+  - src/app/api/ai/diagram/route.ts — uses AI SDK (OpenRouter) to produce DAG + Mermaid.
+  - src/app/api/ai/assistant/… — OpenRouter-backed assistant (tool calling; SSE streaming route emits Mermaid + DAG events).
   - src/lib/ai/tools/firecrawl.ts — minimal wrapper.
-  - src/lib/ai/client.ts — AI SDK OpenAI provider client with baseURL support.
+  - src/lib/ai/client.ts — AI SDK client configured for OpenRouter by default.
   - src/lib/ai/schemas.ts — Zod DAG schema used by AI.
   - src/lib/mermaid/compile.ts — DAG→Mermaid compiler.
+  - src/lib/board/dagToExcalidraw.ts — DAG→Excalidraw skeletons.
+  - src/lib/board/events.ts — app-wide event to insert diagrams on the board.
   - .env.example — template for env vars.
   - IMPLEMENTATION_STATUS.md — running status of implemented/partial/not implemented and what’s needed from you.
 
 - Notes:
   - Live collaboration via excalidraw-room is not yet enabled (needs server URL & integration step).
   - No DB persistence yet; next step is Supabase Auth + board snapshots.
-  - AI diagram generation requires setting OPENAI_API_KEY (and optionally OPENAI_BASE_URL for OpenAI-compatible providers). Default model is AI_MODEL (gpt-4o-mini).
+  - AI diagram generation uses OpenRouter by default. Set `OPENROUTER_API_KEY` (preferred) or use `GOOGLE_API_KEY` for Gemini. Default model is `AI_MODEL` (defaults to `openai/gpt-4o-mini`).
+
+## Troubleshooting
+
+- Runtime TypeError: Cannot read properties of undefined (reading 'call') — Next.js 15.5.2 (Webpack)
+  - Usually caused by a stale `.next/` cache or mismatched lockfile root.
+  - Fixes:
+    - Stop dev server, then `npm run clean && npm run dev`.
+    - Ensure there is only one lockfile in this workspace (remove any root-level `package-lock.json` that is outside the repo).
+    - If you prefer Turbopack, set `next dev --turbopack` but make sure the repository root is pinned (we set `turbopack.root = __dirname` in `next.config.js`).
 
 ## Current Implementation Snapshot
 

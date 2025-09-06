@@ -3,13 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
+    "clean": "rm -rf .next",
+    "predev": "npm run -s clean && mkdir -p .next/static/development && echo 'self.__BUILD_MANIFEST={};' > .next/static/development/_buildManifest.js",
+    "dev": "next dev",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx --fix"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "@ai-sdk/google": "^2.0.0",
     "@excalidraw/excalidraw": "^0.18.0",
     "@langchain/openai": "^0.3.6",
     "ai": "^5.0.0",
@@ -21,7 +24,8 @@
     "react-dom": "19.1.0",
     "zod": "^3.23.8",
     "framer-motion": "^11.3.0",
-    "openai": "^4"
+    "openai": "^4",
+    "@google/generative-ai": "^0.22.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

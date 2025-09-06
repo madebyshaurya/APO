@@ -1,7 +1,11 @@
 import { NextRequest } from "next/server";
-import OpenAI from "openai";
+import { streamText, generateObject, tool } from "ai";
+import { aiModel } from "@/lib/ai/client";
 import { fcSearch } from "@/lib/ai/tools/firecrawl";
 import { dagToMermaid } from "@/lib/mermaid/compile";
+import { z } from "zod";
+import { DagSchema, ExSpecSchema } from "@/lib/ai/schemas";
+import { specToExcalidrawSkeleton } from "@/lib/board/specToExcalidraw";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,175 +18,162 @@ function sse(data: string, event?: string) {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const prompt = searchParams.get("prompt") || "";
-  const modelName = process.env.AI_MODEL || "gpt-4o-mini";
+  const modelParam = searchParams.get("model") || undefined;
+  const ctxId = searchParams.get("ctx") || undefined;
+  const allowed = ["openai/gpt-4o-mini", "openai/gpt-4o", "google/gemini-2.5-flash"] as const;
+  const sanitizeModel = (m?: string) => (m && (allowed as readonly string[]).includes(m)) ? m : "openai/gpt-4o-mini";
+  const modelName = sanitizeModel(modelParam || process.env.AI_MODEL || "openai/gpt-4o-mini");
+  const isGoogle = modelName.startsWith("google/");
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: string, payload: any) => {
         controller.enqueue(sse(JSON.stringify(payload), event));
       };
-
       const close = () => controller.close();
+
       try {
-        console.log("[assistant/stream] start", { modelName, hasKey: !!process.env.OPENAI_API_KEY, promptLen: prompt.length });
-        if (!process.env.OPENAI_API_KEY) {
-          send("error", { message: "OPENAI_API_KEY not set" });
-          close();
-          return;
+        console.log("[assistant/stream] start", { modelName, hasOpenAIKey: !!(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY), hasGoogleKey: !!process.env.GOOGLE_API_KEY, promptLen: prompt.length });
+        if (isGoogle && !process.env.GOOGLE_API_KEY) {
+          send("error", { message: "Google API key not set" });
+          return close();
+        }
+        if (!isGoogle && !process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) {
+          send("error", { message: "OpenRouter/OpenAI API key not set" });
+          return close();
         }
         if (!prompt) {
           send("error", { message: "Missing prompt" });
-          close();
-          return;
+          return close();
         }
-
-        const client = new OpenAI({
-          apiKey: process.env.OPENAI_API_KEY,
-          baseURL: process.env.OPENAI_BASE_URL || undefined,
-        });
 
         send("log", { message: `Starting assistant with model ${modelName}` });
-        console.log("[assistant/stream] initialized client", { modelName });
-
-        const tools: any[] = [
-          {
-            type: "function",
-            function: {
-              name: "web_search",
-              description: "Search the web/news using Firecrawl (fresh info).",
-              parameters: {
-                type: "object",
-                properties: {
-                  query: { type: "string" },
-                  limit: { type: "integer", minimum: 1, maximum: 10, default: 6 },
-                  tbs: { type: "string", default: "w" },
-                  sources: { type: "array", items: { enum: ["web", "news", "images"], type: "string" }, default: ["web", "news"] },
-                },
-                required: ["query"],
-              },
+        // Pull any provided canvas summary from the context store
+        let canvasSummary: any = null;
+        try { const mod = await import("@/lib/runtime/contextStore"); canvasSummary = mod.getContext(ctxId); } catch {}
+        const tools = {
+          web_search: tool({
+            description: "Search the web/news using Firecrawl (fresh info).",
+            inputSchema: z.object({
+              query: z.string(),
+              limit: z.number().int().min(1).max(10).optional(),
+              tbs: z.string().optional(),
+              sources: z.array(z.enum(["web", "news", "images"]))
+                .optional(),
+            }),
+            execute: async ({ query, limit = 6, tbs = "w", sources = ["web", "news"] }: any) => {
+              try {
+                const data = await fcSearch({ query, limit, tbs, sources: sources as any });
+                const count = ((data as any)?.results?.web?.length || 0) + ((data as any)?.results?.news?.length || 0);
+                send("log", { message: `web_search results: ${count}` });
+                return data;
+              } catch (err: any) {
+                const emsg = err?.message ?? String(err);
+                send("error", { scope: "web_search", message: emsg });
+                return { error: emsg };
+              }
             },
-          },
-          {
-            type: "function",
-            function: {
-              name: "write_mermaid",
-              description: "Create or update a Mermaid flowchart from a prompt or DAG.",
-              parameters: {
-                type: "object",
-                properties: {
-                  prompt: { type: "string" },
-                  dag: { type: "object" },
-                },
-              },
+          }),
+          write_mermaid: tool({
+            description: "Create or update a Mermaid flowchart from a prompt or DAG.",
+            inputSchema: z.object({ prompt: z.string().optional(), dag: z.any().optional() }),
+            execute: async ({ prompt: p, dag }: any) => {
+              try {
+                let d = dag;
+                if (!d) {
+                  const { object } = await generateObject({
+                    model: aiModel(modelName),
+                    schema: DagSchema,
+                    system: "Produce a JSON object matching the DAG schema {nodes,edges}. No extra text.",
+                    prompt: p || prompt,
+                  });
+                  d = object as any;
+                }
+                const code = dagToMermaid(d);
+                send("mermaid", { code, dag: d });
+                return { mermaid: code, dag: d };
+              } catch (err: any) {
+                const emsg = err?.message ?? String(err);
+                send("error", { scope: "write_mermaid", message: emsg });
+                return { error: emsg };
+              }
             },
-          },
-        ];
+          }),
+          draw_excalidraw: tool({
+            description: "Draw boxes/arrows on the Excalidraw board via a JSON spec.",
+            inputSchema: z.object({ prompt: z.string().optional(), spec: z.any().optional() }),
+            execute: async ({ prompt: p, spec }: any) => {
+              try {
+                let s = spec;
+                if (!s) {
+                  const { object } = await generateObject({
+                    model: aiModel(modelName),
+                    schema: ExSpecSchema,
+                    system: "Produce JSON matching ExSpec (nodes, edges, optional layout {direction,gapX,gapY,maxPerRow} and style). No extra text.",
+                    prompt: p || prompt,
+                  });
+                  s = object as any;
+                }
+                const elements = specToExcalidrawSkeleton(s);
+                send("excalidraw", { elements });
+                return { ok: true, count: elements.length };
+              } catch (err: any) {
+                const emsg = err?.message ?? String(err);
+                send("error", { scope: "draw_excalidraw", message: emsg });
+                return { error: emsg };
+              }
+            },
+          }),
+          read_canvas: tool({
+            description: "Read the current canvas summary (nodes, edges, selection/stats).",
+            inputSchema: z.object({}).optional(),
+            execute: async () => {
+              if (!canvasSummary) return { empty: true };
+              return canvasSummary;
+            }
+          }),
+          search_canvas: tool({
+            description: "Search canvas nodes by text and return matches with neighbor edges.",
+            inputSchema: z.object({ query: z.string(), limit: z.number().int().optional().default(8) }),
+            execute: async ({ query, limit }: any) => {
+              if (!canvasSummary) return { matches: [] };
+              const q = (query || "").toLowerCase();
+              const nodes: any[] = canvasSummary.nodes || [];
+              const edges: any[] = canvasSummary.edges || [];
+              const score = (t: string) => {
+                const idx = t.indexOf(q);
+                return idx < 0 ? Infinity : idx + Math.max(0, t.length - q.length);
+              };
+              const ranked = nodes
+                .map(n => ({ n, s: score((n.text || "").toLowerCase()) }))
+                .filter(r => r.s !== Infinity)
+                .sort((a,b)=>a.s-b.s)
+                .slice(0, limit || 8);
+              const byId = new Map(nodes.map((n:any)=>[n.id,n]));
+              const results = ranked.map(r => {
+                const id = r.n.id;
+                const neigh = edges.filter((e:any)=> e.from===id || e.to===id);
+                return { node: r.n, neighbors: neigh, snippet: r.n.text };
+              });
+              return { matches: results };
+            }
+          }),
+        } as const;
 
         const sys = [
-          "You are Apo, an autonomous planning assistant on a whiteboard.",
-          "Decide which tools to use. Use web_search only when fresh info is needed.",
-          "When the instruction implies a plan/process/steps, you MUST call write_mermaid to produce a flowchart.",
-        ].join(" ")
+          "You are Apo, a research-first systems designer for software engineers.",
+          "Decide freely which tool to use: web_search (fresh info), write_mermaid (flowchart), draw_excalidraw (boxes/arrows).",
+          "Prefer clear, minimal explanations. For diagrams, choose layout and visuals yourself—only add layout hints when needed.",
+          "Examples:",
+          "- To sketch a split FE/BE plan: draw_excalidraw with nodes ['frontend','backend'] and edges root->each.",
+          "- To express detailed workflows: write_mermaid with phases as subgraphs.",
+        ].join(" ");
 
-        let messages: any[] = [
-          { role: "system", content: sys },
-          { role: "user", content: prompt },
-        ];
-
-        let finalText = "";
-        let mermaid: string | null = null;
-
-        const t0 = Date.now();
-        for (let i = 0; i < 6; i++) {
-          send("log", { message: `LLM turn ${i + 1}` });
-          const tCall = Date.now();
-          const resp = await client.chat.completions.create({
-            model: modelName,
-            messages,
-            tools,
-            tool_choice: "auto" as any,
-          });
-          const tCallMs = Date.now() - tCall;
-          if ((resp as any)?.usage) {
-            const { prompt_tokens, completion_tokens, total_tokens } = (resp as any).usage;
-            send("usage", { prompt_tokens, completion_tokens, total_tokens });
-            console.log("[assistant/stream] usage", { turn: i + 1, prompt_tokens, completion_tokens, total_tokens, tCallMs });
-          } else {
-            console.log("[assistant/stream] call duration", { turn: i + 1, tCallMs });
-          }
-          const msg = resp.choices[0].message as any;
-          if (msg.tool_calls && msg.tool_calls.length > 0) {
-            messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: msg.tool_calls });
-            for (const call of msg.tool_calls) {
-              const name = call.function?.name;
-              let args: any = {};
-              try { args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch {}
-              send("log", { message: `tool:${name}`, args });
-              console.log("[assistant/stream] tool_call", { name, args });
-              let toolResult: any = null;
-              if (name === "web_search") {
-                try {
-                  const data = await fcSearch({
-                    query: args.query,
-                    limit: args.limit ?? 6,
-                    tbs: args.tbs ?? "w",
-                    sources: args.sources ?? ["web", "news"],
-                  });
-                  const count = (data?.results?.web?.length || 0) + (data?.results?.news?.length || 0);
-                  send("log", { message: `web_search results: ${count}` });
-                  console.log("[assistant/stream] web_search results", { count });
-                  toolResult = data;
-                } catch (e: any) {
-                  const err = { error: e?.message ?? String(e) };
-                  send("log", { message: `web_search error`, err });
-                  console.error("[assistant/stream] web_search error", err);
-                  toolResult = err;
-                }
-              } else if (name === "write_mermaid") {
-                try {
-                  let d = args.dag;
-                  if (!d) {
-                    const dagResp = await client.chat.completions.create({
-                      model: modelName,
-                      messages: [
-                        { role: "system", content: "Return ONLY valid JSON for a DAG with fields {nodes,edges}." },
-                        { role: "user", content: args.prompt || prompt },
-                      ],
-                      response_format: { type: "json_object" } as any,
-                    });
-                    const json = dagResp.choices[0].message?.content || "{}";
-                    d = JSON.parse(json);
-                  }
-                  mermaid = dagToMermaid(d);
-                  send("mermaid", { code: mermaid });
-                  console.log("[assistant/stream] write_mermaid emitted code", { length: mermaid?.length || 0 });
-                  toolResult = { mermaid, dag: d };
-                } catch (e: any) {
-                  const err = { error: e?.message ?? String(e) };
-                  send("log", { message: `write_mermaid error`, err });
-                  console.error("[assistant/stream] write_mermaid error", err);
-                  toolResult = err;
-                }
-              }
-              messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(toolResult) });
-            }
-          } else {
-            finalText = msg.content || "";
-            break;
-          }
+        const result = await streamText({ model: aiModel(modelName), tools, system: sys, prompt });
+        for await (const delta of result.textStream) {
+          if (delta) send("text", { chunk: delta });
         }
-
-        // Stream text in chunks (simple faux streaming)
-        if (finalText) {
-          const chunks = finalText.match(/.{1,60}/g) || [];
-          for (const ch of chunks) {
-            send("text", { chunk: ch });
-            await new Promise(r => setTimeout(r, 20));
-          }
-        }
-        const totalMs = Date.now() - t0;
-        send("done", { ok: true, ms: totalMs });
-        console.log("[assistant/stream] done", { ms: totalMs });
+        send("done", { ok: true });
         close();
       } catch (e: any) {
         console.error("[assistant/stream] fatal", e);
